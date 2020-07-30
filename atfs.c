@@ -48,7 +48,7 @@ static void __exit atfs_exit(void)
 }
 module_exit(atfs_exit);
 
-MODULE_AUTHOR("Hacker");
+MODULE_AUTHOR("Enze Li");
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("A Test File System");
-MODULE_ALIAS("atfs module");
+MODULE_DESCRIPTION("A Tiny File System");
+MODULE_ALIAS("atfs");
