@@ -2,6 +2,11 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 
+static struct file_system_type atfs_fs_type = {
+	.name	= "atfs",
+	.owner	= THIS_MODULE,
+};
+
 ssize_t atfs_file_read(struct file *filp, char __user *buf, 
 		size_t count, loff_t *ppos)
 {
@@ -30,7 +35,25 @@ struct file_operations atfs_file_operations = {
  */
 int atfs_register(void)
 {
+	int ret;
 	printk(KERN_INFO "atfs_register...");
+	ret = register_filesystem(&atfs_fs_type);
+	if (ret < 0) {
+		printk(KERN_ERR "register file system fail %d", ret);
+		return ret;
+	}
+	return 0;
+}
+
+int atfs_unregister(void)
+{
+	int ret;
+	printk(KERN_INFO "atfs_unregister...");
+	ret = unregister_filesystem(&atfs_fs_type);
+	if (ret < 0) {
+		printk(KERN_ERR "unregister file system fail %d", ret);
+		return ret;
+	}
 	return 0;
 }
 
@@ -45,6 +68,8 @@ module_init(atfs_init);
 static void __exit atfs_exit(void)
 {
 	printk(KERN_INFO "atfs exit...\n");
+	atfs_unregister();
+	return;
 }
 module_exit(atfs_exit);
 
