@@ -2,6 +2,8 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 
+static struct vfsmount *atfs_mount;
+
 static struct file_system_type atfs_fs_type = {
 	.name	= "atfs",
 	.owner	= THIS_MODULE,
@@ -24,6 +26,15 @@ int atfs_open_file(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+struct dentry *atfs_create_file(const char* name)
+{
+	return NULL;
+}
+
+struct dentry *atfs_create_dir(const char *name)
+{
+	return atfs_create_file(name);
+}
 struct file_operations atfs_file_operations = {
 	read:		atfs_file_read,
 	write:		atfs_file_write,
@@ -41,7 +52,13 @@ int atfs_register(void)
 	if (ret < 0) {
 		printk(KERN_ERR "register file system fail %d", ret);
 		return ret;
+	} else {
+		atfs_mount = kern_mount(&atfs_fs_type);
+		if (IS_ERR(atfs_mount)) {
+			printk(KERN_ERR "mount filesystem error %d", IS_ERR(atfs_mount));
+		}
 	}
+	atfs_create_dir("testDir");
 	return 0;
 }
 
