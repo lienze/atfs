@@ -1,6 +1,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/mount.h>
 
 static struct vfsmount *atfs_mount;
 
@@ -28,6 +29,12 @@ int atfs_open_file(struct inode *inode, struct file *filp)
 
 struct dentry *atfs_create_file(const char* name)
 {
+	struct dentry *root_dentry = atfs_mount->mnt_sb->s_root;
+	struct inode *inode = new_inode(root_dentry->d_inode->i_sb);
+	if (root_dentry) {
+		d_instantiate(root_dentry, inode);
+		dget(root_dentry);
+	}
 	return NULL;
 }
 
