@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
+#include <linux/slab.h>
 
 static struct vfsmount *atfs_mnt;
 
@@ -24,7 +25,7 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 		return ERR_PTR(-EINVAL);
 	}
 	inode = new_inode(sb);
-	root = d_make_root(inode);		
+	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
 }
@@ -55,16 +56,28 @@ int atfs_open_file(struct inode *inode, struct file *filp)
 struct dentry *atfs_create_file(const char* name)
 {
 	struct dentry *root_dentry = NULL;
+	struct dentry *new_dentry = NULL;
 	struct inode *inode = NULL;
-	BUG_ON(!atfs_mnt);
-	BUG_ON(!atfs_mnt->mnt_sb);
-	BUG_ON(!atfs_mnt->mnt_sb->s_root);
+	struct qstr dentry_name;
+	char *tmp_name;
+	tmp_name = kmalloc(NAME_MAX + 1, GFP_KERNEL);
+	if (!tmp_name)
+		return ERR_PTR(-ENOMEM);
+	memcpy(tmp_name, name, sizeof(name));
+	dentry_name.name = tmp_name;
+	dentry_name.len = sizeof(tmp_name);
+
+	printk(KERN_INFO "atfs create file start...");
 	root_dentry = atfs_mnt->mnt_sb->s_root;
+	new_dentry = d_alloc(root_dentry, &dentry_name);
 	inode = new_inode(root_dentry->d_inode->i_sb);
 	if (root_dentry) {
-		d_instantiate(root_dentry, inode);
-		dget(root_dentry);
+		d_instantiate(new_dentry, inode);
+		printk(KERN_INFO "atfs root_dentry half...");
+		dget(new_dentry);
+		printk(KERN_INFO "atfs root_dentry dget...");
 	}
+	printk(KERN_INFO "atfs create file end.")
 	return ERR_PTR(-EINVAL);
 }
 
