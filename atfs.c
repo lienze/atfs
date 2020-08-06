@@ -18,6 +18,8 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	struct super_block *sb = NULL;
 	struct inode *inode;
 	struct dentry *root;
+	if (atfs_mnt)
+		return ERR_PTR(-EINVAL);
 	printk(KERN_INFO "atfs_mount...");
 	sb = sget(fs_type, NULL, atfs_set_super, flags, NULL);
 	if (!sb) {
@@ -63,21 +65,22 @@ struct dentry *atfs_create_file(const char* name)
 	tmp_name = kmalloc(NAME_MAX + 1, GFP_KERNEL);
 	if (!tmp_name)
 		return ERR_PTR(-ENOMEM);
-	memcpy(tmp_name, name, sizeof(name));
+	memcpy(tmp_name, name, 6);
 	dentry_name.name = tmp_name;
-	dentry_name.len = sizeof(tmp_name);
+	dentry_name.len = 6;
 
 	printk(KERN_INFO "atfs create file start...");
 	root_dentry = atfs_mnt->mnt_sb->s_root;
 	new_dentry = d_alloc(root_dentry, &dentry_name);
 	inode = new_inode(root_dentry->d_inode->i_sb);
-	if (root_dentry) {
+	inode->i_mode = S_IFDIR;
+	if (inode) {
 		d_instantiate(new_dentry, inode);
 		printk(KERN_INFO "atfs root_dentry half...");
 		dget(new_dentry);
 		printk(KERN_INFO "atfs root_dentry dget...");
 	}
-	printk(KERN_INFO "atfs create file end.")
+	printk(KERN_INFO "atfs create file end.");
 	return ERR_PTR(-EINVAL);
 }
 
@@ -111,6 +114,7 @@ int atfs_register(void)
 		}
 	}
 	atfs_create_dir("testDir");
+	printk(KERN_INFO "atfs_register end...");
 	return 0;
 }
 
