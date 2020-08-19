@@ -22,11 +22,13 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 		return ERR_PTR(-EINVAL);
 	printk(KERN_INFO "atfs_mount...");
 	sb = sget(fs_type, NULL, atfs_set_super, flags, NULL);
+	printk(KERN_INFO "atfs super_block:%p", sb);
 	if (!sb) {
 		printk(KERN_INFO "atfs super_block is NULL");
 		return ERR_PTR(-EINVAL);
 	}
 	inode = new_inode(sb);
+	inode->i_mode |= S_IFDIR;
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
@@ -107,13 +109,7 @@ int atfs_register(void)
 		return ret;
 	} else {
 		printk(KERN_INFO "register file system succeed %d", ret);
-		atfs_mnt = kern_mount(&atfs_fs_type);
-		if (IS_ERR(atfs_mnt)) {
-			printk(KERN_ERR "mount filesystem error %ld", PTR_ERR(atfs_mnt));
-			return PTR_ERR(atfs_mnt);
-		}
 	}
-	atfs_create_dir("testDir");
 	printk(KERN_INFO "atfs_register end...");
 	return 0;
 }
