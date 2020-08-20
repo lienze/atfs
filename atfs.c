@@ -12,6 +12,16 @@ static int atfs_set_super(struct super_block *sb, void *data)
 	return set_anon_super(sb, data);
 }
 
+static struct dentry *atfs_lookup(struct inode * dir,
+		struct dentry *dentry, unsigned int flags)
+{
+	return NULL;
+}
+
+const struct inode_operations atfs_dir_inode_operations = {
+	.lookup = atfs_lookup,
+};
+
 static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 		   const char *dev_name, void *data)
 {
@@ -29,6 +39,7 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	}
 	inode = new_inode(sb);
 	inode->i_mode |= S_IFDIR;
+	inode->i_op = &atfs_dir_inode_operations;
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
