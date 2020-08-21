@@ -18,8 +18,31 @@ static struct dentry *atfs_lookup(struct inode * dir,
 	return NULL;
 }
 
+ssize_t atfs_file_read(struct file *filp, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	return 0;
+}
+
+ssize_t atfs_file_write(struct file *filp, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	return 0;
+}
+
+static int atfs_file_open(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
 const struct inode_operations atfs_dir_inode_operations = {
-	.lookup = atfs_lookup,
+	.lookup	= atfs_lookup,
+};
+
+const struct file_operations atfs_file_operations = {
+	.open	= atfs_file_open,
+	.write	= atfs_file_write,
+	.read	= atfs_file_read,
 };
 
 static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
@@ -40,6 +63,7 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	inode = new_inode(sb);
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
+	inode->i_fop = &atfs_file_operations;
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
@@ -50,23 +74,6 @@ static struct file_system_type atfs_fs_type = {
 	.owner	= THIS_MODULE,
 	.mount	= atfs_mount,
 };
-
-ssize_t atfs_file_read(struct file *filp, char __user *buf, 
-		size_t count, loff_t *ppos)
-{
-	return 0;
-}
-
-ssize_t atfs_file_write(struct file *filp, const char __user *buf, 
-		size_t count, loff_t *ppos)
-{
-	return 0;
-}
-
-int atfs_open_file(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
 
 struct dentry *atfs_create_file(const char* name)
 {
@@ -101,11 +108,6 @@ struct dentry *atfs_create_dir(const char *name)
 {
 	return atfs_create_file(name);
 }
-struct file_operations atfs_file_operations = {
-	read:		atfs_file_read,
-	write:		atfs_file_write,
-	open:		atfs_open_file,
-};
 
 /*
  * register atfs
