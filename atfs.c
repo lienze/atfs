@@ -6,6 +6,9 @@
 
 static struct vfsmount *atfs_mnt;
 
+const struct inode_operations atfs_dir_inode_operations;
+const struct file_operations atfs_dir_operations;
+
 static int atfs_set_super(struct super_block *sb, void *data)
 {
 	sb->s_fs_info = data;
@@ -35,8 +38,25 @@ static int atfs_file_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static int atfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
+{
+	struct inode * inode;
+
+	inode = new_inode(dir->i_sb);
+	inode->i_mode |= S_IFDIR;
+	inode->i_op = &atfs_dir_inode_operations;
+	inode->i_fop = &atfs_dir_operations;
+
+	d_instantiate_new(dentry, inode);
+	return 0;
+}
+
 const struct inode_operations atfs_dir_inode_operations = {
 	.lookup	= atfs_lookup,
+	.mkdir	= atfs_mkdir,
+};
+
+const struct file_operations atfs_dir_operations = {
 };
 
 const struct file_operations atfs_file_operations = {
