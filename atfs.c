@@ -67,6 +67,7 @@ static int atfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
 	inode->i_fop = &atfs_dir_operations;
+	inode->i_state = I_NEW;
 
 	d_instantiate_new(dentry, inode);
 	return 0;
