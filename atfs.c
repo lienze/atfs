@@ -9,6 +9,22 @@ static struct vfsmount *atfs_mnt;
 const struct inode_operations atfs_dir_inode_operations;
 const struct file_operations atfs_dir_operations;
 
+struct atfs_dir_entry {
+	__le32	inode;			/* Inode number */
+	__le16	rec_len;		/* Directory entry length */
+	__u8	name_len;		/* Name length */
+	__u8	file_type;
+	char	name[];			/* File name */
+};
+
+typedef struct atfs_dir_entry atfs_dirent;
+
+static inline void atfs_put_page(struct page *page)
+{
+	//kunmap(page);
+	//put_page(page);
+}
+
 static int atfs_set_super(struct super_block *sb, void *data)
 {
 	sb->s_fs_info = data;
@@ -18,23 +34,28 @@ static int atfs_set_super(struct super_block *sb, void *data)
 static struct dentry *atfs_lookup(struct inode * dir,
 		struct dentry *dentry, unsigned int flags)
 {
+	printk(KERN_INFO "atfs lookup invoked");
 	return NULL;
 }
 
 ssize_t atfs_file_read(struct file *filp, char __user *buf,
 		size_t count, loff_t *ppos)
 {
+	printk(KERN_INFO "atfs file_read invoked");
 	return 0;
 }
 
 ssize_t atfs_file_write(struct file *filp, const char __user *buf,
 		size_t count, loff_t *ppos)
 {
+	printk(KERN_INFO "atfs file_write invoked");
 	return 0;
 }
 
 static int atfs_file_open(struct inode *inode, struct file *filp)
 {
+	BUG();
+	printk(KERN_INFO "atfs file_open invoked...");
 	return 0;
 }
 
