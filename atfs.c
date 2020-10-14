@@ -34,28 +34,28 @@ static int atfs_set_super(struct super_block *sb, void *data)
 static struct dentry *atfs_lookup(struct inode * dir,
 		struct dentry *dentry, unsigned int flags)
 {
-	printk(KERN_INFO "atfs lookup invoked");
+	printk(KERN_INFO "==atfs== atfs_lookup invoked");
 	return NULL;
 }
 
 ssize_t atfs_file_read(struct file *filp, char __user *buf,
 		size_t count, loff_t *ppos)
 {
-	printk(KERN_INFO "atfs file_read invoked");
+	printk(KERN_INFO "==atfs== atfs_file_read invoked");
 	return 0;
 }
 
 ssize_t atfs_file_write(struct file *filp, const char __user *buf,
 		size_t count, loff_t *ppos)
 {
-	printk(KERN_INFO "atfs file_write invoked");
+	printk(KERN_INFO "==atfs== atfs_file_write invoked");
 	return 0;
 }
 
 static int atfs_file_open(struct inode *inode, struct file *filp)
 {
 	BUG();
-	printk(KERN_INFO "atfs file_open invoked...");
+	printk(KERN_INFO "==atfs== atfs_file_open invoked...");
 	return 0;
 }
 
@@ -95,11 +95,11 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	struct dentry *root;
 	if (atfs_mnt)
 		return ERR_PTR(-EINVAL);
-	printk(KERN_INFO "atfs_mount...");
+	printk(KERN_INFO "==atfs== atfs_mount invoked...");
 	sb = sget(fs_type, NULL, atfs_set_super, flags, NULL);
-	printk(KERN_INFO "atfs super_block:%p", sb);
+	printk(KERN_INFO "==atfs== super_block:%p", sb);
 	if (!sb) {
-		printk(KERN_INFO "atfs super_block is NULL");
+		printk(KERN_INFO "==atfs== super_block is NULL");
 		return ERR_PTR(-EINVAL);
 	}
 	inode = new_inode(sb);
@@ -131,18 +131,18 @@ struct dentry *atfs_create_file(const char* name)
 	dentry_name.name = tmp_name;
 	dentry_name.len = 6;
 
-	printk(KERN_INFO "atfs create file start...");
+	printk(KERN_INFO "==atfs== atfs_create_file start...");
 	root_dentry = atfs_mnt->mnt_sb->s_root;
 	new_dentry = d_alloc(root_dentry, &dentry_name);
 	inode = new_inode(root_dentry->d_inode->i_sb);
 	inode->i_mode = S_IFDIR;
 	if (inode) {
 		d_instantiate(new_dentry, inode);
-		printk(KERN_INFO "atfs root_dentry half...");
+		printk(KERN_INFO "==atfs== root_dentry half...");
 		dget(new_dentry);
-		printk(KERN_INFO "atfs root_dentry dget...");
+		printk(KERN_INFO "==atfs== root_dentry dget...");
 	}
-	printk(KERN_INFO "atfs create file end.");
+	printk(KERN_INFO "==atfs== atfs_create_file end.");
 	return ERR_PTR(-EINVAL);
 }
 
@@ -157,25 +157,25 @@ struct dentry *atfs_create_dir(const char *name)
 int atfs_register(void)
 {
 	int ret;
-	printk(KERN_INFO "atfs_register...");
+	printk(KERN_INFO "==atfs== atfs_register start...");
 	ret = register_filesystem(&atfs_fs_type);
 	if (ret < 0) {
-		printk(KERN_ERR "register file system fail %d", ret);
+		printk(KERN_ERR "==atfs== register file system fail %d", ret);
 		return ret;
 	} else {
-		printk(KERN_INFO "register file system succeed %d", ret);
+		printk(KERN_INFO "==atfs== register file system succeed %d", ret);
 	}
-	printk(KERN_INFO "atfs_register end...");
+	printk(KERN_INFO "==atfs== atfs_register end...");
 	return 0;
 }
 
 int atfs_unregister(void)
 {
 	int ret;
-	printk(KERN_INFO "atfs_unregister...");
+	printk(KERN_INFO "==atfs== atfs_unregister start...");
 	ret = unregister_filesystem(&atfs_fs_type);
 	if (ret < 0) {
-		printk(KERN_ERR "unregister file system fail %d", ret);
+		printk(KERN_ERR "==atfs== unregister file system fail %d", ret);
 		return ret;
 	}
 	return 0;
@@ -183,7 +183,7 @@ int atfs_unregister(void)
 
 static int __init atfs_init(void)
 {
-	printk(KERN_INFO "atfs init...\n");
+	printk(KERN_INFO "==atfs== atfs_init start...\n");
 	atfs_register();
 	return 0;
 }
@@ -191,7 +191,7 @@ module_init(atfs_init);
 
 static void __exit atfs_exit(void)
 {
-	printk(KERN_INFO "atfs exit...\n");
+	printk(KERN_INFO "==atfs== atfs_exit start...\n");
 	atfs_unregister();
 	return;
 }
