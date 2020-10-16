@@ -54,10 +54,16 @@ ssize_t atfs_file_write(struct file *filp, const char __user *buf,
 
 static int atfs_file_open(struct inode *inode, struct file *filp)
 {
-	BUG();
+	//BUG();
 	printk(KERN_INFO "==atfs== atfs_file_open invoked...");
 	return 0;
 }
+
+static ssize_t atfs_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	return generic_file_read_iter(iocb, to);
+}
+
 
 static int atfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 {
@@ -73,18 +79,27 @@ static int atfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 	return 0;
 }
 
+static int atfs_readdir(struct file *file, struct dir_context *ctx)
+{
+	//BUG();
+	printk(KERN_INFO "==atfs== atfs_readdir invoked");
+	return 0;
+}
+
 const struct inode_operations atfs_dir_inode_operations = {
 	.lookup	= atfs_lookup,
 	.mkdir	= atfs_mkdir,
 };
 
 const struct file_operations atfs_dir_operations = {
+	.iterate_shared	= atfs_readdir,
 };
 
 const struct file_operations atfs_file_operations = {
-	.open	= atfs_file_open,
-	.write	= atfs_file_write,
-	.read	= atfs_file_read,
+	.open		= atfs_file_open,
+	.write		= atfs_file_write,
+	.read		= atfs_file_read,
+	.read_iter	= atfs_file_read_iter,
 };
 
 static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
@@ -105,7 +120,7 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	inode = new_inode(sb);
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
-	inode->i_fop = &atfs_file_operations;
+	inode->i_fop = &atfs_dir_operations;
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
