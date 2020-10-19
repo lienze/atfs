@@ -3,11 +3,18 @@
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/slab.h>
+#include <linux/pagemap.h>
+#include <linux/iversion.h>
+#include <linux/buffer_head.h>
+#include <linux/mpage.h>
 
 static struct vfsmount *atfs_mnt;
 
 const struct inode_operations atfs_dir_inode_operations;
 const struct file_operations atfs_dir_operations;
+const struct file_operations atfs_file_operations;
+const struct address_space_operations atfs_aops;
+
 
 struct atfs_dir_entry {
 	__le32	inode;			/* Inode number */
@@ -19,11 +26,56 @@ struct atfs_dir_entry {
 
 typedef struct atfs_dir_entry atfs_dirent;
 
+static inline unsigned atfs_chunk_size(struct inode *inode)
+{
+	return inode->i_sb->s_blocksize;
+}
+
 static inline void atfs_put_page(struct page *page)
 {
-	//kunmap(page);
-	//put_page(page);
+	kunmap(page);
+	put_page(page);
 }
+
+static struct page * atfs_get_page(struct inode *dir, unsigned long n,
+				   int quiet)
+{
+	struct address_space *mapping = dir->i_mapping;
+	struct page *page = read_mapping_page(mapping, n, NULL);
+	if (!IS_ERR(page)) {
+		kmap(page);
+		if (unlikely(!PageChecked(page))) {
+			if (PageError(page))
+				goto fail;
+		}
+	}
+	return page;
+
+fail:
+	atfs_put_page(page);
+	return ERR_PTR(-EIO);
+}
+/*
+ * ATFS_DIR_PAD defines the directory entries boundaries
+ *
+ * NOTE: It must be a multiple of 4
+ */
+#define ATFS_DIR_PAD		 	4
+#define ATFS_DIR_ROUND 			(ATFS_DIR_PAD - 1)
+#define ATFS_DIR_REC_LEN(name_len)	(((name_len) + 8 + ATFS_DIR_ROUND) & \
+					 ~ATFS_DIR_ROUND)
+#define ATFS_MAX_REC_LEN		((1<<16)-1)
+static inline unsigned atfs_rec_len_from_disk(__le16 dlen)
+{
+	unsigned len = le16_to_cpu(dlen);
+
+#if (PAGE_SIZE >= 65536)
+	if (len == ATFS_MAX_REC_LEN)
+		return 1 << 16;
+#endif
+	return len;
+}
+
 
 static int atfs_set_super(struct super_block *sb, void *data)
 {
@@ -72,17 +124,156 @@ static int atfs_mkdir(struct inode * dir, struct dentry * dentry, umode_t mode)
 	inode = new_inode(dir->i_sb);
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
-	inode->i_fop = &atfs_dir_operations;
+	inode->i_fop = &atfs_file_operations;
 	inode->i_state = I_NEW;
 
 	d_instantiate_new(dentry, inode);
 	return 0;
 }
 
+int atfs_get_block(struct inode *inode, sector_t iblock,
+		struct buffer_head *bh_result, int create)
+{
+	unsigned max_blocks = bh_result->b_size >> inode->i_blkbits;
+	bool new = false, boundary = false;
+	u32 bno;
+	int ret;
+
+	ret = 0;
+	//ret = ext2_get_blocks(inode, iblock, max_blocks, &bno, &new, &boundary,create);
+	if (ret <= 0)
+		return ret;
+
+	map_bh(bh_result, inode->i_sb, bno);
+	bh_result->b_size = (ret << inode->i_blkbits);
+	if (new)
+		set_buffer_new(bh_result);
+	if (boundary)
+		set_buffer_boundary(bh_result);
+	return 0;
+}
+
+static int atfs_readpage(struct file *file, struct page *page)
+{
+	return mpage_readpage(page, atfs_get_block);
+}
+
+const struct address_space_operations atfs_aops = {
+	.readpage		= atfs_readpage,
+};
+
+/*
+ * p is at least 6 bytes before the end of page
+ */
+static inline atfs_dirent *atfs_next_entry(atfs_dirent *p)
+{
+	return (atfs_dirent *)((char *)p +
+			atfs_rec_len_from_disk(p->rec_len));
+}
+
+static inline unsigned 
+atfs_validate_entry(char *base, unsigned offset, unsigned mask)
+{
+	atfs_dirent *de = (atfs_dirent*)(base + offset);
+	atfs_dirent *p = (atfs_dirent*)(base + (offset&mask));
+	while ((char*)p < (char*)de) {
+		if (p->rec_len == 0)
+			break;
+		p = atfs_next_entry(p);
+	}
+	return (char *)p - base;
+}
+
+/*
+ * Return the offset into page `page_nr' of the last valid
+ * byte in that page, plus one.
+ */
+static unsigned
+atfs_last_byte(struct inode *inode, unsigned long page_nr)
+{
+	unsigned last_byte = inode->i_size;
+
+	last_byte -= page_nr << PAGE_SHIFT;
+	if (last_byte > PAGE_SIZE)
+		last_byte = PAGE_SIZE;
+	return last_byte;
+}
+
 static int atfs_readdir(struct file *file, struct dir_context *ctx)
 {
 	//BUG();
-	printk(KERN_INFO "==atfs== atfs_readdir invoked");
+	//printk(KERN_INFO "==atfs== atfs_readdir invoked");
+
+	loff_t pos = ctx->pos;
+	struct inode *inode = file_inode(file);
+	struct super_block *sb = inode->i_sb;
+	unsigned int offset = pos & ~PAGE_MASK;
+	unsigned long n = pos >> PAGE_SHIFT;
+	unsigned long npages = dir_pages(inode);
+	unsigned chunk_mask = ~(atfs_chunk_size(inode)-1);
+	bool need_revalidate = !inode_eq_iversion(inode, file->f_version);
+	bool has_filetype;
+
+	printk(KERN_INFO "==atfs== atfs_readdir pos:%lld npages:%d inode_size:%lld",
+			pos, npages, inode->i_size);
+
+	//if (pos > inode->i_size - ATFS_DIR_REC_LEN(1))
+	//	return 0;
+
+	//has_filetype =
+	//	EXT2_HAS_INCOMPAT_FEATURE(sb, EXT2_FEATURE_INCOMPAT_FILETYPE);
+
+	for ( ; n < npages; n++, offset = 0) {
+		char *kaddr, *limit;
+		atfs_dirent *de;
+		struct page *page = atfs_get_page(inode, n, 0);
+
+		if (IS_ERR(page)) {
+			/*
+			 * ext2_error(sb, __func__,
+			 *        "bad page in #%lu",
+			 *        inode->i_ino);
+			 */
+			ctx->pos += PAGE_SIZE - offset;
+			return PTR_ERR(page);
+		}
+		kaddr = page_address(page);
+		if (unlikely(need_revalidate)) {
+			if (offset) {
+				offset = atfs_validate_entry(kaddr, offset, chunk_mask);
+				ctx->pos = (n<<PAGE_SHIFT) + offset;
+			}
+			file->f_version = inode_query_iversion(inode);
+			need_revalidate = false;
+		}
+		de = (atfs_dirent *)(kaddr+offset);
+		limit = kaddr + atfs_last_byte(inode, n) - ATFS_DIR_REC_LEN(1);
+		for ( ;(char*)de <= limit; de = atfs_next_entry(de)) {
+			if (de->rec_len == 0) {
+				/*
+				 * ext2_error(sb, __func__,
+				 *     "zero-length directory entry");
+				 */
+				atfs_put_page(page);
+				return -EIO;
+			}
+			if (de->inode) {
+				unsigned char d_type = DT_UNKNOWN;
+
+				if (has_filetype)
+					d_type = fs_ftype_to_dtype(de->file_type);
+
+				if (!dir_emit(ctx, de->name, de->name_len,
+						le32_to_cpu(de->inode),
+						d_type)) {
+					atfs_put_page(page);
+					return 0;
+				}
+			}
+			ctx->pos += atfs_rec_len_from_disk(de->rec_len);
+		}
+		atfs_put_page(page);
+	}
 	return 0;
 }
 
@@ -121,6 +312,8 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
 	inode->i_fop = &atfs_dir_operations;
+	inode->i_size = 1024;
+	inode->i_mapping->a_ops = &atfs_aops;
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
