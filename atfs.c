@@ -188,20 +188,15 @@ static int atfs_block_to_path(struct inode *inode,
 			long i_block, int offsets[4], int *boundary)
 {
 	int ptrs = ATFS_ADDR_PER_BLOCK(inode->i_sb);
-	printk(KERN_INFO "==atfs== i_sb:%p",inode->i_sb);
-	//int ptrs_bits = ATFS_ADDR_PER_BLOCK_BITS(inode->i_sb);
-	int ptrs_bits = 32; 
-	printk(KERN_INFO "==atfs== %p",inode);
-	printk(KERN_INFO "==atfs== %p",inode->i_sb);
-	printk(KERN_INFO "==atfs== %p",inode->i_sb->s_fs_info);
-	printk(KERN_INFO "==atfs== %d",ATFS_ADDR_PER_BLOCK_BITS(inode->i_sb));
+	int ptrs_bits = ATFS_ADDR_PER_BLOCK_BITS(inode->i_sb);
 
-	printk(KERN_INFO "==atfs== ptrs_bits:%d",ptrs_bits);
 	const long direct_blocks = ATFS_NDIR_BLOCKS,
 		indirect_blocks = ptrs,
 		double_blocks = (1 << (ptrs_bits * 2));
 	int n = 0;
 	int final = 0;
+
+	printk(KERN_INFO "==atfs== atfs_block_to_path ptrs_bits:%d",ptrs_bits);
 
 	if (i_block < 0) {
 		/*
@@ -2235,7 +2230,6 @@ int atfs_get_block(struct inode *inode, sector_t iblock,
 	bool new = false, boundary = false;
 	u32 bno;
 	int ret;
-
 	ret = atfs_get_blocks(inode, iblock, max_blocks, &bno, &new, &boundary,create);
 	if (ret <= 0)
 		return ret;
@@ -2406,21 +2400,17 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	if (IS_ERR(bdev))
 		return ERR_CAST(bdev);
 
-	printk(KERN_INFO "==atfs== atfs_mount blkdev_get_by_path...");
-
 	sb_info = kzalloc(sizeof(*sb_info), GFP_KERNEL);
 	if (!sb_info)
 		goto failed;
-	printk(KERN_INFO "==atfs== atfs_mount block_size:%d", block_size(bdev));
+
 	sb = sget(fs_type, NULL, atfs_set_super, flags, sb_info);
-	printk(KERN_INFO "==atfs== super_block:%p", sb);
 	if (!sb) {
 		printk(KERN_INFO "==atfs== super_block is NULL");
 		return ERR_PTR(-EINVAL);
 	}
 	sb->s_bdev = bdev;
 	sb_set_blocksize(sb, block_size(bdev));
-	printk(KERN_INFO "==atfs== atfs_mount %ld", sb->s_blocksize);
 
 	sb_info->s_addr_per_block_bits = 
 		ilog2(ATFS_ADDR_PER_BLOCK(sb));
