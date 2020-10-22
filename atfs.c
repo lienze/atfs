@@ -2391,18 +2391,40 @@ const struct file_operations atfs_file_operations = {
 static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 		   const char *dev_name, void *data)
 {
+	struct block_device *bdev;
 	struct super_block *sb = NULL;
 	struct inode *inode;
 	struct dentry *root;
+	struct atfs_sb_info * sb_info;
+	fmode_t mode = FMODE_READ | FMODE_EXCL;
+
 	if (atfs_mnt)
 		return ERR_PTR(-EINVAL);
 	printk(KERN_INFO "==atfs== atfs_mount invoked...");
-	sb = sget(fs_type, NULL, atfs_set_super, flags, NULL);
+
+	bdev = blkdev_get_by_path(dev_name, mode, fs_type);
+	if (IS_ERR(bdev))
+		return ERR_CAST(bdev);
+
+	printk(KERN_INFO "==atfs== atfs_mount blkdev_get_by_path...");
+
+	sb_info = kzalloc(sizeof(*sb_info), GFP_KERNEL);
+	if (!sb_info)
+		goto failed;
+	printk(KERN_INFO "==atfs== atfs_mount block_size:%d", block_size(bdev));
+	sb = sget(fs_type, NULL, atfs_set_super, flags, sb_info);
 	printk(KERN_INFO "==atfs== super_block:%p", sb);
 	if (!sb) {
 		printk(KERN_INFO "==atfs== super_block is NULL");
 		return ERR_PTR(-EINVAL);
 	}
+	sb->s_bdev = bdev;
+	sb_set_blocksize(sb, block_size(bdev));
+	printk(KERN_INFO "==atfs== atfs_mount %ld", sb->s_blocksize);
+
+	sb_info->s_addr_per_block_bits = 
+		ilog2(ATFS_ADDR_PER_BLOCK(sb));
+
 	inode = new_inode(sb);
 	inode->i_mode |= S_IFDIR;
 	inode->i_op = &atfs_dir_inode_operations;
@@ -2412,6 +2434,8 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	root = d_make_root(inode);
 	sb->s_root = root;
 	return dget(sb->s_root);
+failed:
+	return NULL;
 }
 
 static struct file_system_type atfs_fs_type = {
