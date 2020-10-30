@@ -15,11 +15,15 @@
 
 static struct vfsmount *atfs_mnt;
 
-const struct inode_operations atfs_dir_inode_operations;
 const struct file_operations atfs_dir_operations;
 const struct file_operations atfs_file_operations;
-const struct address_space_operations atfs_aops;
 
+const struct address_space_operations atfs_aops;
+const struct address_space_operations atfs_nobh_aops;
+
+const struct inode_operations atfs_dir_inode_operations;
+const struct inode_operations atfs_file_inode_operations;
+const struct inode_operations atfs_special_inode_operations;
 
 struct atfs_dir_entry {
 	__le32	inode;			/* Inode number */
@@ -61,6 +65,7 @@ static inline void atfs_put_page(struct page *page)
 	put_page(page);
 }
 
+__attribute__((optimize("O0")))
 static struct page * atfs_get_page(struct inode *dir, unsigned long n,
 				   int quiet)
 {
@@ -107,11 +112,440 @@ static int atfs_set_super(struct super_block *sb, void *data)
 	return set_anon_super(sb, data);
 }
 
+struct atfs_group_desc * atfs_get_group_desc(struct super_block * sb,
+					     unsigned int block_group,
+					     struct buffer_head ** bh)
+{
+	unsigned long group_desc;
+	unsigned long offset;
+	struct atfs_group_desc * desc;
+	struct atfs_sb_info *sbi = ATFS_SB(sb);
+
+	if (block_group >= sbi->s_groups_count) {
+/*
+ *         ext2_error (sb, "ext2_get_group_desc",
+ *                 "block_group >= groups_count - "
+ *                 "block_group = %d, groups_count = %lu",
+ *                 block_group, sbi->s_groups_count);
+ * 
+ */
+		return NULL;
+	}
+
+	group_desc = block_group >> ATFS_DESC_PER_BLOCK_BITS(sb);
+	offset = block_group & (ATFS_DESC_PER_BLOCK(sb) - 1);
+	if (!sbi->s_group_desc[group_desc]) {
+		/*
+		 * ext2_error (sb, "ext2_get_group_desc",
+		 *         "Group descriptor not loaded - "
+		 *         "block_group = %d, group_desc = %lu, desc = %lu",
+		 *          block_group, group_desc, offset);
+		 */
+		return NULL;
+	}
+
+	desc = (struct atfs_group_desc *) sbi->s_group_desc[group_desc]->b_data;
+	if (bh)
+		*bh = sbi->s_group_desc[group_desc];
+	return desc + offset;
+}
+
+
+static struct atfs_inode *atfs_get_inode(struct super_block *sb, ino_t ino,
+					struct buffer_head **p)
+{
+	struct buffer_head * bh;
+	unsigned long block_group;
+	unsigned long block;
+	unsigned long offset;
+	struct atfs_group_desc * gdp;
+
+	*p = NULL;
+	if ((ino != ATFS_ROOT_INO && ino < ATFS_FIRST_INO(sb)) ||
+	    ino > le32_to_cpu(ATFS_SB(sb)->s_es->s_inodes_count))
+		goto Einval;
+
+	block_group = (ino - 1) / ATFS_INODES_PER_GROUP(sb);
+	gdp = atfs_get_group_desc(sb, block_group, NULL);
+	if (!gdp)
+		goto Egdp;
+	/*
+	 * Figure out the offset within the block group inode table
+	 */
+	offset = ((ino - 1) % ATFS_INODES_PER_GROUP(sb)) * ATFS_INODE_SIZE(sb);
+	block = le32_to_cpu(gdp->bg_inode_table) +
+		(offset >> ATFS_BLOCK_SIZE_BITS(sb));
+	if (!(bh = sb_bread(sb, block)))
+		goto Eio;
+
+	*p = bh;
+	offset &= (ATFS_BLOCK_SIZE(sb) - 1);
+	return (struct atfs_inode *) (bh->b_data + offset);
+
+Einval:
+	/*
+	 * ext2_error(sb, "ext2_get_inode", "bad inode number: %lu",
+	 *        (unsigned long) ino);
+	 */
+	return ERR_PTR(-EINVAL);
+Eio:
+	/*
+	 * ext2_error(sb, "ext2_get_inode",
+	 *        "unable to read inode block - inode=%lu, block=%lu",
+	 *        (unsigned long) ino, block);
+	 */
+Egdp:
+	return ERR_PTR(-EIO);
+}
+
+void atfs_set_inode_flags(struct inode *inode)
+{
+	unsigned int flags = ATFS_I(inode)->i_flags;
+
+	inode->i_flags &= ~(S_SYNC | S_APPEND | S_IMMUTABLE | S_NOATIME |
+				S_DIRSYNC | S_DAX);
+	if (flags & ATFS_SYNC_FL)
+		inode->i_flags |= S_SYNC;
+	if (flags & ATFS_APPEND_FL)
+		inode->i_flags |= S_APPEND;
+	if (flags & ATFS_IMMUTABLE_FL)
+		inode->i_flags |= S_IMMUTABLE;
+	if (flags & ATFS_NOATIME_FL)
+		inode->i_flags |= S_NOATIME;
+	if (flags & ATFS_DIRSYNC_FL)
+		inode->i_flags |= S_DIRSYNC;
+	if (test_opt(inode->i_sb, DAX) && S_ISREG(inode->i_mode))
+		inode->i_flags |= S_DAX;
+}
+
+/*
+ * Returns 1 if the passed-in block region is valid; 0 if some part overlaps
+ * with filesystem metadata blocks.
+ */
+int atfs_data_block_valid(struct atfs_sb_info *sbi, atfs_fsblk_t start_blk,
+			  unsigned int count)
+{
+	if ((start_blk <= le32_to_cpu(sbi->s_es->s_first_data_block)) ||
+	    (start_blk + count - 1 < start_blk) ||
+	    (start_blk + count - 1 >= le32_to_cpu(sbi->s_es->s_blocks_count)))
+		return 0;
+
+	/* Ensure we do not step over superblock */
+	if ((start_blk <= sbi->s_sb_block) &&
+	    (start_blk + count - 1 >= sbi->s_sb_block))
+		return 0;
+
+	return 1;
+}
+
+void atfs_set_file_ops(struct inode *inode)
+{
+	inode->i_op = &atfs_file_inode_operations;
+	inode->i_fop = &atfs_file_operations;
+	if (test_opt(inode->i_sb, NOBH))
+		inode->i_mapping->a_ops = &atfs_nobh_aops;
+	else
+		inode->i_mapping->a_ops = &atfs_aops;
+}
+
+
+__attribute__((optimize("O0")))
+struct inode *atfs_iget(struct super_block *sb, unsigned long ino)
+{
+	struct atfs_inode_info *ei;
+	struct buffer_head * bh = NULL;
+	struct atfs_inode *raw_inode;
+	struct inode *inode;
+	long ret = -EIO;
+	int n;
+	uid_t i_uid;
+	gid_t i_gid;
+
+	inode = iget_locked(sb, ino);
+	if (!inode)
+		return ERR_PTR(-ENOMEM);
+	if (!(inode->i_state & I_NEW))
+		return inode;
+
+	ei = ATFS_I(inode);
+	ei->i_block_alloc_info = NULL;
+
+	raw_inode = atfs_get_inode(inode->i_sb, ino, &bh);
+	if (IS_ERR(raw_inode)) {
+		ret = PTR_ERR(raw_inode);
+ 		goto bad_inode;
+	}
+
+	inode->i_mode = le16_to_cpu(raw_inode->i_mode);
+	i_uid = (uid_t)le16_to_cpu(raw_inode->i_uid_low);
+	i_gid = (gid_t)le16_to_cpu(raw_inode->i_gid_low);
+	if (!(test_opt (inode->i_sb, NO_UID32))) {
+		i_uid |= le16_to_cpu(raw_inode->i_uid_high) << 16;
+		i_gid |= le16_to_cpu(raw_inode->i_gid_high) << 16;
+	}
+	i_uid_write(inode, i_uid);
+	i_gid_write(inode, i_gid);
+	set_nlink(inode, le16_to_cpu(raw_inode->i_links_count));
+	inode->i_size = le32_to_cpu(raw_inode->i_size);
+	inode->i_atime.tv_sec = (signed)le32_to_cpu(raw_inode->i_atime);
+	inode->i_ctime.tv_sec = (signed)le32_to_cpu(raw_inode->i_ctime);
+	inode->i_mtime.tv_sec = (signed)le32_to_cpu(raw_inode->i_mtime);
+	inode->i_atime.tv_nsec = inode->i_mtime.tv_nsec = inode->i_ctime.tv_nsec = 0;
+	ei->i_dtime = le32_to_cpu(raw_inode->i_dtime);
+	/* We now have enough fields to check if the inode was active or not.
+	 * This is needed because nfsd might try to access dead inodes
+	 * the test is that same one that e2fsck uses
+	 * NeilBrown 1999oct15
+	 */
+	if (inode->i_nlink == 0 && (inode->i_mode == 0 || ei->i_dtime)) {
+		/* this inode is deleted */
+		ret = -ESTALE;
+		goto bad_inode;
+	}
+	inode->i_blocks = le32_to_cpu(raw_inode->i_blocks);
+	ei->i_flags = le32_to_cpu(raw_inode->i_flags);
+	atfs_set_inode_flags(inode);
+	ei->i_faddr = le32_to_cpu(raw_inode->i_faddr);
+	ei->i_frag_no = raw_inode->i_frag;
+	ei->i_frag_size = raw_inode->i_fsize;
+	ei->i_file_acl = le32_to_cpu(raw_inode->i_file_acl);
+	ei->i_dir_acl = 0;
+
+	if (ei->i_file_acl &&
+	    !atfs_data_block_valid(ATFS_SB(sb), ei->i_file_acl, 1)) {
+		/*
+		 * ext2_error(sb, "ext2_iget", "bad extended attribute block %u",
+		 *        ei->i_file_acl);
+		 */
+		ret = -EFSCORRUPTED;
+		goto bad_inode;
+	}
+
+	if (S_ISREG(inode->i_mode))
+		inode->i_size |= ((__u64)le32_to_cpu(raw_inode->i_size_high)) << 32;
+	else
+		ei->i_dir_acl = le32_to_cpu(raw_inode->i_dir_acl);
+	if (i_size_read(inode) < 0) {
+		ret = -EFSCORRUPTED;
+		goto bad_inode;
+	}
+	ei->i_dtime = 0;
+	inode->i_generation = le32_to_cpu(raw_inode->i_generation);
+	ei->i_state = 0;
+	ei->i_block_group = (ino - 1) / ATFS_INODES_PER_GROUP(inode->i_sb);
+	ei->i_dir_start_lookup = 0;
+
+	/*
+	 * NOTE! The in-memory inode i_data array is in little-endian order
+	 * even on big-endian machines: we do NOT byteswap the block numbers!
+	 */
+	for (n = 0; n < ATFS_N_BLOCKS; n++)
+		ei->i_data[n] = raw_inode->i_block[n];
+
+	if (S_ISREG(inode->i_mode)) {
+		atfs_set_file_ops(inode);
+	} else if (S_ISDIR(inode->i_mode)) {
+		inode->i_op = &atfs_dir_inode_operations;
+		inode->i_fop = &atfs_dir_operations;
+		if (test_opt(inode->i_sb, NOBH))
+			inode->i_mapping->a_ops = &atfs_nobh_aops;
+		else
+			inode->i_mapping->a_ops = &atfs_aops;
+	} 
+	/*
+	 * else if (S_ISLNK(inode->i_mode)) {
+	 *     if (atfs_inode_is_fast_symlink(inode)) {
+	 *         inode->i_link = (char *)ei->i_data;
+	 *         inode->i_op = &ext2_fast_symlink_inode_operations;
+	 *         nd_terminate_link(ei->i_data, inode->i_size,
+	 *             sizeof(ei->i_data) - 1);
+	 *     } else {
+	 *         inode->i_op = &ext2_symlink_inode_operations;
+	 *         inode_nohighmem(inode);
+	 *         if (test_opt(inode->i_sb, NOBH))
+	 *             inode->i_mapping->a_ops = &ext2_nobh_aops;
+	 *         else
+	 *             inode->i_mapping->a_ops = &ext2_aops;
+	 *     }
+	 * } 
+	 */
+	else {
+		inode->i_op = &atfs_special_inode_operations;
+		if (raw_inode->i_block[0])
+			init_special_inode(inode, inode->i_mode,
+			   old_decode_dev(le32_to_cpu(raw_inode->i_block[0])));
+		else 
+			init_special_inode(inode, inode->i_mode,
+			   new_decode_dev(le32_to_cpu(raw_inode->i_block[1])));
+	}
+	brelse (bh);
+	unlock_new_inode(inode);
+	return inode;
+	
+bad_inode:
+	brelse(bh);
+	iget_failed(inode);
+	return ERR_PTR(ret);
+}
+
+/*
+ * Return the offset into page `page_nr' of the last valid
+ * byte in that page, plus one.
+ */
+static unsigned
+atfs_last_byte(struct inode *inode, unsigned long page_nr)
+{
+	unsigned last_byte = inode->i_size;
+
+	last_byte -= page_nr << PAGE_SHIFT;
+	if (last_byte > PAGE_SIZE)
+		last_byte = PAGE_SIZE;
+	return last_byte;
+}
+
+/*
+ * p is at least 6 bytes before the end of page
+ */
+static inline atfs_dirent *atfs_next_entry(atfs_dirent *p)
+{
+	return (atfs_dirent *)((char *)p +
+			atfs_rec_len_from_disk(p->rec_len));
+}
+
+/*
+ * NOTE! unlike strncmp, atfs_match returns 1 for success, 0 for failure.
+ *
+ * len <= ATFS_NAME_LEN and de != NULL are guaranteed by caller.
+ */
+static inline int atfs_match (int len, const char * const name,
+					struct atfs_dir_entry * de)
+{
+	if (len != de->name_len)
+		return 0;
+	if (!de->inode)
+		return 0;
+	return !memcmp(name, de->name, len);
+}
+
+
+/*
+ *	atfs_find_entry()
+ *
+ * finds an entry in the specified directory with the wanted name. It
+ * returns the page in which the entry was found (as a parameter - res_page),
+ * and the entry itself. Page is returned mapped and unlocked.
+ * Entry is guaranteed to be valid.
+ */
+__attribute__((optimize("O0")))
+struct atfs_dir_entry *atfs_find_entry(struct inode *dir,
+			const struct qstr *child, struct page **res_page)
+{
+	const char *name = child->name;
+	int namelen = child->len;
+	unsigned reclen = ATFS_DIR_REC_LEN(namelen);
+	unsigned long start, n;
+	unsigned long npages = dir_pages(dir);
+	struct page *page = NULL;
+	struct atfs_inode_info *ei = ATFS_I(dir);
+	atfs_dirent * de;
+	int dir_has_error = 0;
+
+	if (npages == 0)
+		goto out;
+
+	/* OFFSET_CACHE */
+	*res_page = NULL;
+
+	start = ei->i_dir_start_lookup;
+	if (start >= npages)
+		start = 0;
+	n = start;
+	do {
+		char *kaddr;
+		page = atfs_get_page(dir, n, dir_has_error);
+		if (!IS_ERR(page)) {
+			kaddr = page_address(page);
+			de = (atfs_dirent *) kaddr;
+			kaddr += atfs_last_byte(dir, n) - reclen;
+			while ((char *) de <= kaddr) {
+				if (de->rec_len == 0) {
+					/*
+					 * ext2_error(dir->i_sb, __func__,
+					 *     "zero-length directory entry");
+					 */
+					atfs_put_page(page);
+					goto out;
+				}
+				if (atfs_match (namelen, name, de))
+					goto found;
+				de = atfs_next_entry(de);
+			}
+			atfs_put_page(page);
+		} else
+			dir_has_error = 1;
+
+		if (++n >= npages)
+			n = 0;
+		/* next page is past the blocks we've got */
+		if (unlikely(n > (dir->i_blocks >> (PAGE_SHIFT - 9)))) {
+			/*
+			 * ext2_error(dir->i_sb, __func__,
+			 *     "dir %lu size %lld exceeds block count %llu",
+			 *     dir->i_ino, dir->i_size,
+			 *     (unsigned long long)dir->i_blocks);
+			 */
+			goto out;
+		}
+	} while (n != start);
+out:
+	return NULL;
+
+found:
+	*res_page = page;
+	ei->i_dir_start_lookup = n;
+	return de;
+}
+
+
+ino_t atfs_inode_by_name(struct inode *dir, const struct qstr *child)
+{
+	ino_t res = 0;
+	struct atfs_dir_entry *de;
+	struct page *page;
+	
+	de = atfs_find_entry(dir, child, &page);
+	if (de) {
+		res = le32_to_cpu(de->inode);
+		atfs_put_page(page);
+	}
+	return res;
+}
+
 static struct dentry *atfs_lookup(struct inode * dir,
 		struct dentry *dentry, unsigned int flags)
 {
+	struct inode * inode;
+	ino_t ino;
+
 	printk(KERN_INFO "==atfs== atfs_lookup invoked");
-	return NULL;
+
+	if (dentry->d_name.len > ATFS_NAME_LEN)
+		return ERR_PTR(-ENAMETOOLONG);
+
+	ino = atfs_inode_by_name(dir, &dentry->d_name);
+	inode = NULL;
+	if (ino) {
+		inode = atfs_iget(dir->i_sb, ino);
+		if (inode == ERR_PTR(-ESTALE)) {
+			/*
+			 * ext2_error(dir->i_sb, __func__,
+			 *         "deleted inode referenced: %lu",
+			 *         (unsigned long) ino);
+			 */
+			return ERR_PTR(-EIO);
+		}
+	}
+	return d_splice_alias(inode, dentry);
 }
 
 ssize_t atfs_file_read(struct file *filp, char __user *buf,
@@ -524,63 +958,6 @@ static void atfs_splice_branch(struct inode *inode,
 	mark_inode_dirty(inode);
 }
 
-/*
- * Returns 1 if the passed-in block region is valid; 0 if some part overlaps
- * with filesystem metadata blocks.
- */
-int atfs_data_block_valid(struct atfs_sb_info *sbi, atfs_fsblk_t start_blk,
-			  unsigned int count)
-{
-	if ((start_blk <= le32_to_cpu(sbi->s_es->s_first_data_block)) ||
-	    (start_blk + count - 1 < start_blk) ||
-	    (start_blk + count - 1 >= le32_to_cpu(sbi->s_es->s_blocks_count)))
-		return 0;
-
-	/* Ensure we do not step over superblock */
-	if ((start_blk <= sbi->s_sb_block) &&
-	    (start_blk + count - 1 >= sbi->s_sb_block))
-		return 0;
-
-	return 1;
-}
-
-struct atfs_group_desc * atfs_get_group_desc(struct super_block * sb,
-					     unsigned int block_group,
-					     struct buffer_head ** bh)
-{
-	unsigned long group_desc;
-	unsigned long offset;
-	struct atfs_group_desc * desc;
-	struct atfs_sb_info *sbi = ATFS_SB(sb);
-
-	if (block_group >= sbi->s_groups_count) {
-/*
- *         ext2_error (sb, "ext2_get_group_desc",
- *                 "block_group >= groups_count - "
- *                 "block_group = %d, groups_count = %lu",
- *                 block_group, sbi->s_groups_count);
- * 
- */
-		return NULL;
-	}
-
-	group_desc = block_group >> ATFS_DESC_PER_BLOCK_BITS(sb);
-	offset = block_group & (ATFS_DESC_PER_BLOCK(sb) - 1);
-	if (!sbi->s_group_desc[group_desc]) {
-		/*
-		 * ext2_error (sb, "ext2_get_group_desc",
-		 *         "Group descriptor not loaded - "
-		 *         "block_group = %d, group_desc = %lu, desc = %lu",
-		 *          block_group, group_desc, offset);
-		 */
-		return NULL;
-	}
-
-	desc = (struct atfs_group_desc *) sbi->s_group_desc[group_desc]->b_data;
-	if (bh)
-		*bh = sbi->s_group_desc[group_desc];
-	return desc + offset;
-}
 
 static int atfs_valid_block_bitmap(struct super_block *sb,
 					struct atfs_group_desc *desc,
@@ -2252,14 +2629,39 @@ const struct address_space_operations atfs_aops = {
 	.readpage		= atfs_readpage,
 };
 
-/*
- * p is at least 6 bytes before the end of page
- */
-static inline atfs_dirent *atfs_next_entry(atfs_dirent *p)
-{
-	return (atfs_dirent *)((char *)p +
-			atfs_rec_len_from_disk(p->rec_len));
-}
+const struct inode_operations atfs_file_inode_operations = {
+	/*
+	 * .getattr	= atfs_getattr,
+	 * .setattr	= atfs_setattr,
+	 * .get_acl	= atfs_get_acl,
+	 * .set_acl	= atfs_set_acl,
+	 * .fiemap		= atfs_fiemap,
+	 */
+};
+
+const struct address_space_operations atfs_nobh_aops = {
+	/*
+	 * .readpage		= atfs_readpage,
+	 * .readpages		= atfs_readpages,
+	 * .writepage		= atfs_nobh_writepage,
+	 * .write_begin	= atfs_nobh_write_begin,
+	 * .write_end		= nobh_write_end,
+	 * .bmap			= atfs_bmap,
+	 * .direct_IO		= atfs_direct_IO,
+	 * .writepages		= atfs_writepages,
+	 * .migratepage		= buffer_migrate_page,
+	 * .error_remove_page	= generic_error_remove_page,
+	 */
+};
+
+const struct inode_operations atfs_special_inode_operations = {
+	/*
+	 * .getattr	= atfs_getattr,
+	 * .setattr	= atfs_setattr,
+	 * .get_acl	= atfs_get_acl,
+	 * .set_acl	= atfs_set_acl,
+	 */
+};
 
 static inline unsigned 
 atfs_validate_entry(char *base, unsigned offset, unsigned mask)
@@ -2274,21 +2676,8 @@ atfs_validate_entry(char *base, unsigned offset, unsigned mask)
 	return (char *)p - base;
 }
 
-/*
- * Return the offset into page `page_nr' of the last valid
- * byte in that page, plus one.
- */
-static unsigned
-atfs_last_byte(struct inode *inode, unsigned long page_nr)
-{
-	unsigned last_byte = inode->i_size;
 
-	last_byte -= page_nr << PAGE_SHIFT;
-	if (last_byte > PAGE_SIZE)
-		last_byte = PAGE_SIZE;
-	return last_byte;
-}
-
+__attribute__((optimize("O0")))
 static int atfs_readdir(struct file *file, struct dir_context *ctx)
 {
 	loff_t pos = ctx->pos;
@@ -2306,11 +2695,13 @@ static int atfs_readdir(struct file *file, struct dir_context *ctx)
 	 *         pos, npages, inode->i_size);
 	 */
 
-	//if (pos > inode->i_size - ATFS_DIR_REC_LEN(1))
-	//	return 0;
+	if (pos > inode->i_size - ATFS_DIR_REC_LEN(1))
+		return 0;
 
-	//has_filetype =
-	//	ATFS_HAS_INCOMPAT_FEATURE(sb, ATFS_FEATURE_INCOMPAT_FILETYPE);
+	/*
+	 * has_filetype =
+	 *     ATFS_HAS_INCOMPAT_FEATURE(sb, ATFS_FEATURE_INCOMPAT_FILETYPE);
+	 */
 
 	for ( ; n < npages; n++, offset = 0) {
 		char *kaddr, *limit;
@@ -2323,6 +2714,7 @@ static int atfs_readdir(struct file *file, struct dir_context *ctx)
 			 *        "bad page in #%lu",
 			 *        inode->i_ino);
 			 */
+			printk(KERN_ERR "==atfs== bad page in #%lu", inode->i_ino);
 			ctx->pos += PAGE_SIZE - offset;
 			return PTR_ERR(page);
 		}

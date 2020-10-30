@@ -1,6 +1,8 @@
 
 #include <linux/blockgroup_lock.h>
 
+#define ATFS_NAME_LEN 255
+
 /* data type for block offset of block group */
 typedef int atfs_grpblk_t;
 
@@ -232,6 +234,13 @@ struct atfs_group_desc
 	__le32	bg_reserved[3];
 };
 
+/*
+ * Special inode numbers
+ */
+#define	ATFS_BAD_INO		 1	/* Bad blocks inode */
+#define ATFS_ROOT_INO		 2	/* Root inode */
+#define ATFS_BOOT_LOADER_INO	 5	/* Boot loader inode */
+#define ATFS_UNDEL_DIR_INO	 6	/* Undelete directory inode */
 
 /*
  * Macro-instructions used to manage group descriptors
@@ -273,6 +282,36 @@ struct atfs_group_desc
 #define	ATFS_N_BLOCKS			(ATFS_TIND_BLOCK + 1)
 
 /*
+ * Inode flags (GETFLAGS/SETFLAGS)
+ */
+#define	ATFS_SECRM_FL			FS_SECRM_FL	/* Secure deletion */
+#define	ATFS_UNRM_FL			FS_UNRM_FL	/* Undelete */
+#define	ATFS_COMPR_FL			FS_COMPR_FL	/* Compress file */
+#define ATFS_SYNC_FL			FS_SYNC_FL	/* Synchronous updates */
+#define ATFS_IMMUTABLE_FL		FS_IMMUTABLE_FL	/* Immutable file */
+#define ATFS_APPEND_FL			FS_APPEND_FL	/* writes to file may only append */
+#define ATFS_NODUMP_FL			FS_NODUMP_FL	/* do not dump file */
+#define ATFS_NOATIME_FL			FS_NOATIME_FL	/* do not update atime */
+/* Reserved for compression usage... */
+#define ATFS_DIRTY_FL			FS_DIRTY_FL
+#define ATFS_COMPRBLK_FL		FS_COMPRBLK_FL	/* One or more compressed clusters */
+#define ATFS_NOCOMP_FL			FS_NOCOMP_FL	/* Don't compress */
+#define ATFS_ECOMPR_FL			FS_ECOMPR_FL	/* Compression error */
+/* End compression flags --- maybe not all used */	
+#define ATFS_BTREE_FL			FS_BTREE_FL	/* btree format dir */
+#define ATFS_INDEX_FL			FS_INDEX_FL	/* hash-indexed directory */
+#define ATFS_IMAGIC_FL			FS_IMAGIC_FL	/* AFS directory */
+#define ATFS_JOURNAL_DATA_FL		FS_JOURNAL_DATA_FL /* Reserved for ext3 */
+#define ATFS_NOTAIL_FL			FS_NOTAIL_FL	/* file tail should not be merged */
+#define ATFS_DIRSYNC_FL			FS_DIRSYNC_FL	/* dirsync behaviour (directories only) */
+#define ATFS_TOPDIR_FL			FS_TOPDIR_FL	/* Top of directory hierarchies*/
+#define ATFS_RESERVED_FL		FS_RESERVED_FL	/* reserved for ext2 lib */
+
+#define ATFS_FL_USER_VISIBLE		FS_FL_USER_VISIBLE	/* User visible flags */
+#define ATFS_FL_USER_MODIFIABLE		FS_FL_USER_MODIFIABLE	/* User modifiable flags */
+
+
+/*
  * Define ATFS_RESERVATION to reserve data blocks for expanding files
  */
 #define ATFS_DEFAULT_RESERVE_BLOCKS     8
@@ -284,6 +323,27 @@ struct atfs_group_desc
  */
 #define ATFSFS_DATE		"2020/10/20"
 #define ATFSFS_VERSION		"0.1b"
+
+#define i_size_high	i_dir_acl
+
+#define i_reserved1	osd1.linux1.l_i_reserved1
+#define i_frag		osd2.linux2.l_i_frag
+#define i_fsize		osd2.linux2.l_i_fsize
+#define i_uid_low	i_uid
+#define i_gid_low	i_gid
+#define i_uid_high	osd2.linux2.l_i_uid_high
+#define i_gid_high	osd2.linux2.l_i_gid_high
+#define i_reserved2	osd2.linux2.l_i_reserved2
+
+
+/*
+ * File system states
+ */
+#define	ATFS_VALID_FS			0x0001	/* Unmounted cleanly */
+#define	ATFS_ERROR_FS			0x0002	/* Errors detected */
+#define	EFSCORRUPTED			EUCLEAN	/* Filesystem is corrupted */
+
+
 
 /*
  * Mount flags
@@ -344,4 +404,60 @@ atfs_group_first_block_no(struct super_block *sb, unsigned long group_no)
 #define atfs_set_bit_atomic(l, nr, addr)	test_and_set_bit_le(nr, addr)
 #define atfs_clear_bit_atomic(l, nr, addr)	test_and_clear_bit_le(nr, addr)
 
+/*
+ * Structure of an inode on the disk
+ */
+struct atfs_inode {
+	__le16	i_mode;		/* File mode */
+	__le16	i_uid;		/* Low 16 bits of Owner Uid */
+	__le32	i_size;		/* Size in bytes */
+	__le32	i_atime;	/* Access time */
+	__le32	i_ctime;	/* Creation time */
+	__le32	i_mtime;	/* Modification time */
+	__le32	i_dtime;	/* Deletion Time */
+	__le16	i_gid;		/* Low 16 bits of Group Id */
+	__le16	i_links_count;	/* Links count */
+	__le32	i_blocks;	/* Blocks count */
+	__le32	i_flags;	/* File flags */
+	union {
+		struct {
+			__le32  l_i_reserved1;
+		} linux1;
+		struct {
+			__le32  h_i_translator;
+		} hurd1;
+		struct {
+			__le32  m_i_reserved1;
+		} masix1;
+	} osd1;				/* OS dependent 1 */
+	__le32	i_block[ATFS_N_BLOCKS];/* Pointers to blocks */
+	__le32	i_generation;	/* File version (for NFS) */
+	__le32	i_file_acl;	/* File ACL */
+	__le32	i_dir_acl;	/* Directory ACL */
+	__le32	i_faddr;	/* Fragment address */
+	union {
+		struct {
+			__u8	l_i_frag;	/* Fragment number */
+			__u8	l_i_fsize;	/* Fragment size */
+			__u16	i_pad1;
+			__le16	l_i_uid_high;	/* these 2 fields    */
+			__le16	l_i_gid_high;	/* were reserved2[0] */
+			__u32	l_i_reserved2;
+		} linux2;
+		struct {
+			__u8	h_i_frag;	/* Fragment number */
+			__u8	h_i_fsize;	/* Fragment size */
+			__le16	h_i_mode_high;
+			__le16	h_i_uid_high;
+			__le16	h_i_gid_high;
+			__le32	h_i_author;
+		} hurd2;
+		struct {
+			__u8	m_i_frag;	/* Fragment number */
+			__u8	m_i_fsize;	/* Fragment size */
+			__u16	m_pad1;
+			__u32	m_i_reserved2[2];
+		} masix2;
+	} osd2;				/* OS dependent 2 */
+};
 
