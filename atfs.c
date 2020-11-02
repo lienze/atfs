@@ -10,6 +10,7 @@
 #include <linux/quotaops.h>
 #include <linux/cred.h>
 #include <linux/blkdev.h>
+#include <linux/backing-dev.h>
 
 #include "atfs.h"
 
@@ -106,9 +107,34 @@ static inline unsigned atfs_rec_len_from_disk(__le16 dlen)
 	return len;
 }
 
-static int atfs_set_super(struct super_block *sb, void *data)
+static int atfs_set_bdev_super(struct super_block *sb, void *data)
 {
+	sb->s_bdev = data;
+	sb->s_dev = sb->s_bdev->bd_dev;
+	sb->s_bdi = bdi_get(sb->s_bdev->bd_bdi);
+
+	return 0;
+}
+
+static int atfs_fill_super(struct super_block *sb, void *data)
+{
+	int blocksize = BLOCK_SIZE;
 	sb->s_fs_info = data;
+
+	/*
+	 * See what the current blocksize for the device is, and
+	 * use that as the blocksize.  Otherwise (or if the blocksize
+	 * is smaller than the default) use the default.
+	 * This is important for devices that have a hardware
+	 * sectorsize that is larger than the default.
+	 */
+	blocksize = sb_min_blocksize(sb, BLOCK_SIZE);
+	if (!blocksize) {
+		/*
+		 * ext2_msg(sb, KERN_ERR, "error: unable to set blocksize");
+		 * goto failed_sbi;
+		 */
+	}
 	return set_anon_super(sb, data);
 }
 
@@ -2774,6 +2800,7 @@ const struct file_operations atfs_file_operations = {
 	.read_iter	= atfs_file_read_iter,
 };
 
+__attribute__((optimize("O0")))
 static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 		   const char *dev_name, void *data)
 {
@@ -2796,16 +2823,18 @@ static struct dentry *atfs_mount(struct file_system_type *fs_type, int flags,
 	if (!sb_info)
 		goto failed;
 
-	sb = sget(fs_type, NULL, atfs_set_super, flags, sb_info);
+	sb = sget(fs_type, NULL, atfs_set_bdev_super, flags, bdev);
 	if (!sb) {
 		printk(KERN_INFO "==atfs== super_block is NULL");
 		return ERR_PTR(-EINVAL);
 	}
-	sb->s_bdev = bdev;
-	sb_set_blocksize(sb, block_size(bdev));
+	//sb->s_bdev = bdev;
+	//sb_set_blocksize(sb, block_size(bdev));
 
 	sb_info->s_addr_per_block_bits = 
 		ilog2(ATFS_ADDR_PER_BLOCK(sb));
+
+	atfs_fill_super(sb, sb_info);
 
 	inode = new_inode(sb);
 	inode->i_mode |= S_IFDIR;
